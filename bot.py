@@ -18,7 +18,7 @@ db = client["escrow_bot"]
 groups_col = db["groups"]
 global_col = db["global"]
 admins_col = db["admins"]
-participants_col = db["participants"]  # 🔥 Buyer/Seller stats
+participants_col = db["participants"]
 
 # Ensure global doc exists
 if not global_col.find_one({"_id": "stats"}):
@@ -63,7 +63,7 @@ def update_escrower_stats(group_id: str, escrower: str, amount: float):
 
 # 🔥 Update Buyer/Seller Stats with Role
 def update_participant(user: str, amount: float, role: str):
-    pid = f"{user}:{role}"  # unique id => @username:buyer / @username:seller
+    pid = f"{user}:{role}"
     p = participants_col.find_one({"_id": pid})
     if not p:
         participants_col.insert_one({
@@ -88,7 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /complete <code>amount</code> – Complete a deal\n"
         "• /stats – Group stats\n"
         "• /gstats – Global stats (Admin only)\n"
-        "• /mystats – Check your own stats (Buyer/Seller ranking)\n"
+        "• /mystats – Check your combined stats\n"
         "• /addadmin <code>user_id</code> – Owner only\n"
         "• /removeadmin <code>user_id</code> – Owner only\n"
         "• /adminlist – Show all admins"
@@ -114,7 +114,7 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_id = str(update.message.reply_to_message.message_id)
     init_group(chat_id)
 
-    # 🔥 Flexible buyer/seller detection
+    # Flexible buyer/seller detection
     buyer_match = re.search(r"BUYER\s*:\s*(@\w+|\w+)", original_text, re.IGNORECASE)
     seller_match = re.search(r"SELLER\s*:\s*(@\w+|\w+)", original_text, re.IGNORECASE)
     buyer = buyer_match.group(1) if buyer_match else "Unknown"
@@ -134,7 +134,6 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     escrower = f"@{update.effective_user.username}" if update.effective_user.username else update.effective_user.full_name
     update_escrower_stats(chat_id, escrower, amount)
 
-    # 🔥 Update Buyer & Seller stats with roles
     if buyer != "Unknown":
         update_participant(buyer, amount, "buyer")
     if seller != "Unknown":
@@ -188,7 +187,6 @@ async def complete_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global_data["total_fee"] += fee
     global_col.update_one({"_id": "stats"}, {"$set": global_data})
 
-    # 🔥 Flexible buyer/seller detection
     buyer_match = re.search(r"BUYER\s*:\s*(@\w+|\w+)", update.message.reply_to_message.text, re.IGNORECASE)
     seller_match = re.search(r"SELLER\s*:\s*(@\w+|\w+)", update.message.reply_to_message.text, re.IGNORECASE)
     buyer = buyer_match.group(1) if buyer_match else "Unknown"
@@ -253,7 +251,7 @@ async def global_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg)
 
-# 🔥 /mystats with Buyer & Seller (always show both)
+# 🔥 /mystats Combined Buyer + Seller
 async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = f"@{update.effective_user.username}" if update.effective_user.username else str(update.effective_user.id)
 
@@ -263,47 +261,30 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not buyer_doc and not seller_doc:
         return await update.message.reply_text("📊 Aapke naam se koi deal record nahi hai!")
 
-    msg = f"📊 <b>Stats for {user}</b>\n\n"
+    total_deals = (buyer_doc["total_deals"] if buyer_doc else 0) + (seller_doc["total_deals"] if seller_doc else 0)
+    total_volume = (buyer_doc["total_volume"] if buyer_doc else 0) + (seller_doc["total_volume"] if seller_doc else 0)
+    highest_deal = max(
+        buyer_doc["highest_deal"] if buyer_doc else 0,
+        seller_doc["highest_deal"] if seller_doc else 0
+    )
 
-    # ==== Buyer ====
-    if buyer_doc:
-        all_buyers = list(participants_col.find({"role": "buyer"}).sort("total_volume", -1))
-        buyer_rank = next((i+1 for i, x in enumerate(all_buyers) if x["_id"] == buyer_doc["_id"]), None)
-        msg += (
-            f"🛒 <b>As Buyer</b>\n"
-            f"👑 Rank: #{buyer_rank}\n"
-            f"📈 Volume: ₹{buyer_doc['total_volume']}\n"
-            f"🔢 Deals: {buyer_doc['total_deals']}\n"
-            f"⚡ Highest: ₹{buyer_doc['highest_deal']}\n\n"
-        )
-    else:
-        msg += (
-            f"🛒 <b>As Buyer</b>\n"
-            f"👑 Rank: N/A\n"
-            f"📈 Volume: ₹0\n"
-            f"🔢 Deals: 0\n"
-            f"⚡ Highest: ₹0\n\n"
-        )
+    # Rank calc
+    all_users = {}
+    for p in participants_col.find({}):
+        u = p["user"]
+        all_users.setdefault(u, 0)
+        all_users[u] += p["total_volume"]
 
-    # ==== Seller ====
-    if seller_doc:
-        all_sellers = list(participants_col.find({"role": "seller"}).sort("total_volume", -1))
-        seller_rank = next((i+1 for i, x in enumerate(all_sellers) if x["_id"] == seller_doc["_id"]), None)
-        msg += (
-            f"🏷️ <b>As Seller</b>\n"
-            f"👑 Rank: #{seller_rank}\n"
-            f"📈 Volume: ₹{seller_doc['total_volume']}\n"
-            f"🔢 Deals: {seller_doc['total_deals']}\n"
-            f"⚡ Highest: ₹{seller_doc['highest_deal']}\n"
-        )
-    else:
-        msg += (
-            f"🏷️ <b>As Seller</b>\n"
-            f"👑 Rank: N/A\n"
-            f"📈 Volume: ₹0\n"
-            f"🔢 Deals: 0\n"
-            f"⚡ Highest: ₹0\n"
-        )
+    sorted_users = sorted(all_users.items(), key=lambda x: x[1], reverse=True)
+    rank = next((i+1 for i, (u, _) in enumerate(sorted_users) if u == user), None)
+
+    msg = (
+        f"📊 <b>Stats for {user}</b>\n\n"
+        f"👑 Rank: #{rank}\n"
+        f"📈 Total Volume: ₹{total_volume}\n"
+        f"🔢 Total Deals: {total_deals}\n"
+        f"⚡ Highest Deal: ₹{highest_deal}\n"
+    )
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -355,7 +336,7 @@ def main():
     app.add_handler(CommandHandler("complete", complete_deal))
     app.add_handler(CommandHandler("stats", group_stats))
     app.add_handler(CommandHandler("gstats", global_stats))
-    app.add_handler(CommandHandler("mystats", my_stats))  # 🔥 Modified
+    app.add_handler(CommandHandler("mystats", my_stats))
     app.add_handler(CommandHandler("addadmin", add_admin))
     app.add_handler(CommandHandler("removeadmin", remove_admin))
     app.add_handler(CommandHandler("adminlist", admin_list))
