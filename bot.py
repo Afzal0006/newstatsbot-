@@ -10,7 +10,7 @@ MONGO_URI = "mongodb+srv://afzal99550:afzal99550@cluster0.aqmbh9q.mongodb.net/?r
 LOG_CHANNEL_ID = -1002161414780
 
 # Multiple owner IDs
-OWNER_IDS = [6998916494]  # Add as many IDs as you want
+OWNER_IDS = [6998916494]
 
 # ==== MONGO CONNECT ====
 client = MongoClient(MONGO_URI)
@@ -61,7 +61,7 @@ def update_escrower_stats(group_id: str, escrower: str, amount: float):
     global_data["escrowers"][escrower] = global_data["escrowers"].get(escrower, 0) + amount
     global_col.update_one({"_id": "stats"}, {"$set": global_data})
 
-# 🔥 Update Buyer/Seller Stats with Role
+# 🔥 Update Buyer/Seller Stats
 def update_participant(user: str, amount: float, role: str):
     pid = f"{user}:{role}"
     p = participants_col.find_one({"_id": pid})
@@ -117,8 +117,21 @@ async def add_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Flexible buyer/seller detection
     buyer_match = re.search(r"BUYER\s*:\s*(@\w+|\w+)", original_text, re.IGNORECASE)
     seller_match = re.search(r"SELLER\s*:\s*(@\w+|\w+)", original_text, re.IGNORECASE)
-    buyer = buyer_match.group(1) if buyer_match else "Unknown"
-    seller = seller_match.group(1) if seller_match else "Unknown"
+
+    buyer = buyer_match.group(1) if buyer_match else None
+    seller = seller_match.group(1) if seller_match else None
+
+    # fallback: agar username nahi hai to user_id use karo
+    if not buyer and update.message.reply_to_message.from_user:
+        u = update.message.reply_to_message.from_user
+        buyer = f"@{u.username}" if u.username else str(u.id)
+
+    if not seller and update.message.reply_to_message.from_user:
+        u = update.message.reply_to_message.from_user
+        seller = f"@{u.username}" if u.username else str(u.id)
+
+    if not buyer: buyer = "Unknown"
+    if not seller: seller = "Unknown"
 
     g = groups_col.find_one({"_id": chat_id})
     deals = g["deals"]
@@ -189,6 +202,7 @@ async def complete_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buyer_match = re.search(r"BUYER\s*:\s*(@\w+|\w+)", update.message.reply_to_message.text, re.IGNORECASE)
     seller_match = re.search(r"SELLER\s*:\s*(@\w+|\w+)", update.message.reply_to_message.text, re.IGNORECASE)
+
     buyer = buyer_match.group(1) if buyer_match else "Unknown"
     seller = seller_match.group(1) if seller_match else "Unknown"
 
@@ -207,19 +221,6 @@ async def complete_deal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛡️ Escrowed by {escrower}"
     )
     await update.effective_chat.send_message(msg, reply_to_message_id=update.message.reply_to_message.message_id, parse_mode="HTML")
-
-    log_msg = (
-        "📜 <b>Deal Completed (Log)</b>\n"
-        "────────────────\n"
-        f"👤 Buyer   : {buyer}\n"
-        f"👤 Seller  : {seller}\n"
-        f"💸 Released: ₹{released}\n"
-        f"🆔 Trade ID: #{trade_id}\n"
-        f"💰 Fee     : ₹{fee}\n"
-        f"🛡️ Escrowed by {escrower}\n"
-        f"📌 Group: {update.effective_chat.title} ({update.effective_chat.id})"
-    )
-    await context.bot.send_message(LOG_CHANNEL_ID, log_msg, parse_mode="HTML")
 
 # 📊 Group Stats
 async def group_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,7 +252,7 @@ async def global_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg)
 
-# 🔥 /mystats Combined Buyer + Seller
+# 🔥 /mystats Combined Buyer + Seller (All Users)
 async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = f"@{update.effective_user.username}" if update.effective_user.username else str(update.effective_user.id)
 
@@ -268,7 +269,6 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         seller_doc["highest_deal"] if seller_doc else 0
     )
 
-    # Rank calc
     all_users = {}
     for p in participants_col.find({}):
         u = p["user"]
@@ -285,47 +285,6 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔢 Total Deals: {total_deals}\n"
         f"⚡ Highest Deal: ₹{highest_deal}\n"
     )
-
-    await update.message.reply_text(msg, parse_mode="HTML")
-
-# ==== ADMIN COMMANDS ====
-async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in OWNER_IDS:
-        return await update.message.reply_text("❌ Only owners can add admins!")
-
-    if not context.args or not context.args[0].isdigit():
-        return await update.message.reply_text("❌ Provide a valid user_id, e.g. /addadmin 123456789")
-
-    new_admin_id = int(context.args[0])
-    if admins_col.find_one({"user_id": new_admin_id}):
-        return await update.message.reply_text("⚠️ Already an admin!")
-
-    admins_col.insert_one({"user_id": new_admin_id})
-    await update.message.reply_text(f"✅ Added as admin: <code>{new_admin_id}</code>", parse_mode="HTML")
-
-async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in OWNER_IDS:
-        return await update.message.reply_text("❌ Only owners can remove admins!")
-
-    if not context.args or not context.args[0].isdigit():
-        return await update.message.reply_text("❌ Provide a valid user_id, e.g. /removeadmin 123456789")
-
-    remove_id = int(context.args[0])
-    if not admins_col.find_one({"user_id": remove_id}):
-        return await update.message.reply_text("⚠️ This user is not an admin!")
-
-    admins_col.delete_one({"user_id": remove_id})
-    await update.message.reply_text(f"✅ Removed admin: <code>{remove_id}</code>", parse_mode="HTML")
-
-async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update):
-        return
-    admins = list(admins_col.find({}, {"_id": 0, "user_id": 1}))
-    owners = [f"⭐ Owner: <code>{oid}</code>" for oid in OWNER_IDS]
-    admins_text = "\n".join([f"👮 Admin: <code>{a['user_id']}</code>" for a in admins]) or "No extra admins added."
-    msg = "📋 <b>Admin List</b>\n\n" + "\n".join(owners) + "\n" + admins_text
     await update.message.reply_text(msg, parse_mode="HTML")
 
 # ==== MAIN ====
@@ -337,9 +296,6 @@ def main():
     app.add_handler(CommandHandler("stats", group_stats))
     app.add_handler(CommandHandler("gstats", global_stats))
     app.add_handler(CommandHandler("mystats", my_stats))
-    app.add_handler(CommandHandler("addadmin", add_admin))
-    app.add_handler(CommandHandler("removeadmin", remove_admin))
-    app.add_handler(CommandHandler("adminlist", admin_list))
     print("Bot started... ✅")
     app.run_polling()
 
